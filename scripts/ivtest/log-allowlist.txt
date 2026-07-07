@@ -1,0 +1,7 @@
+MTSERROR: Welcome to MTS VERSION
+Failed to load eula.txt
+No key layers in MapLike
+advanced terminal features are not available
+Couldn't look up profile properties
+Failed to verify authentication
+Error during authenticating

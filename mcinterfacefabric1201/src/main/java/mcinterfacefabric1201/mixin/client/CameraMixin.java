@@ -1,0 +1,15 @@
+package mcinterfacefabric1201.mixin.client;
+
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.gen.Invoker;
+
+import net.minecraft.client.Camera;
+
+@Mixin(Camera.class)
+public interface CameraMixin {
+    @Invoker("setPosition")
+    public void invoke_setPosition(double pX, double pY, double pZ);
+
+    @Invoker("setRotation")
+    public void invoke_setRotation(float pYRot, float pXRot);
+}

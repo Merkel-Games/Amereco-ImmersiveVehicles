@@ -660,6 +660,15 @@ public final class PackParser {
         return packItemMap.keySet();
     }
 
+    /**
+     * Returns the jar file a pack was loaded from, or null if the pack ID is unknown.
+     * Loaders whose classpath does not include content-pack jars (e.g. Fabric, where non-mod
+     * jars in the mods folder are not classloaded) use this to read pack assets directly.
+     */
+    public static File getPackJar(String packID) {
+        return packJarMap.get(packID);
+    }
+
     public static JSONPack getPackConfiguration(String packID) {
         return packMap.get(packID);
     }

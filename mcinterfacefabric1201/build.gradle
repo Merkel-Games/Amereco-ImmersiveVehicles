@@ -1,0 +1,115 @@
+plugins {
+    id "fabric-loom" version "1.7.4"
+}
+
+version = "${project.mc_version}-fabric-${project.mod_version}"
+group = project.mod_group
+base.archivesName = project.archive_name
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+repositories {
+    maven {
+        name = "ParchmentMC"
+        url = "https://maven.parchmentmc.org"
+    }
+    maven {
+        name = "TechReborn"
+        url = "https://maven.modmuss50.me/"
+    }
+}
+
+sourceSets {
+    testmod {
+        compileClasspath += main.compileClasspath
+        runtimeClasspath += main.runtimeClasspath
+    }
+}
+
+loom {
+    accessWidenerPath = file("src/main/resources/mts.accesswidener")
+    mixin {
+        defaultRefmapName = "mts.refmap.json"
+    }
+    mods {
+        mts {
+            sourceSet sourceSets.main
+        }
+        ivtestbed {
+            sourceSet sourceSets.testmod
+        }
+    }
+    runs {
+        testmodClient {
+            client()
+            name "Testmod Client"
+            source sourceSets.testmod
+            runDir "runTest"
+            programArgs "--username", "IVTester"
+            vmArg "-Divtestbed.mode=${project.findProperty('ivtestbedMode') ?: 'off'}"
+            if (project.hasProperty('ivtestbedServer')) {
+                programArgs "--quickPlayMultiplayer", project.property('ivtestbedServer').toString()
+            }
+        }
+        gametest {
+            server()
+            name "Game Test"
+            source sourceSets.testmod
+            vmArg "-Dfabric-api.gametest"
+            vmArg "-Dfabric-api.gametest.report-file=${project.layout.buildDirectory.get()}/gametest/junit.xml"
+            runDir "runGametest"
+        }
+    }
+}
+
+configurations {
+    embed
+    // Embedded deps must be on both compile and runtime (dev run) classpaths;
+    // the jar task below also unpacks them into the final JAR. Fabric has no
+    // JPMS module path, so no split-package concerns like on NeoForge.
+    implementation.extendsFrom(embed)
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.mc_version}"
+    mappings loom.layered() {
+        officialMojangMappings()
+        parchment("org.parchmentmc.data:parchment-${project.mc_version}:${project.parchment_version}@zip")
+    }
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    // RF/energy compatibility for the charger block; JiJ'd into the final jar.
+    modImplementation include("teamreborn:energy:${project.tr_energy_version}") {
+        transitive = false
+    }
+
+    // Embed mccore as fat-jar contents. mccore references zero Minecraft classes,
+    // so remapJar passes its classes through untouched.
+    embed(project(path: ":mccore", configuration: "relocated")) {
+        transitive = false
+    }
+
+    testmodImplementation sourceSets.main.output
+}
+
+processResources {
+    inputs.property "version", project.mod_version
+    filesMatching("fabric.mod.json") {
+        expand "version": project.mod_version
+    }
+}
+
+jar {
+    from {
+        configurations.embed.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes(["Implementation-Version": project.mod_version])
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}

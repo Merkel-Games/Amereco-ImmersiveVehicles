@@ -20,3 +20,11 @@ bin
 
 # don't want compiled jars in the repo
 out
+
+# Fabric module run/test directories (Loom dev environments + gametest server)
+runServer
+runTest
+runGametest
+
+# ivtest automation scratch output (screenshots, reports)
+test-output

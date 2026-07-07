@@ -1,0 +1,78 @@
+package mcinterfacefabric1201;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import minecrafttransportsimulator.baseclasses.Point3D;
+import minecrafttransportsimulator.blocks.components.ABlockBase;
+import minecrafttransportsimulator.blocks.instances.BlockBlock;
+import minecrafttransportsimulator.blocks.instances.BlockCollision;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
+
+/**
+ * Builder for a basic MC Block class.  This builder assumes the block will not be a solid
+ * block (so no culling) and may have alpha channels in the texture (like glass).
+ * It also assumes the block can be rotated, and saves the rotation as a set of
+ * FACING properties.  This MAY change in later versions to TE data though...
+ *
+ * @author don_bruce
+ */
+public class BuilderBlock extends Block {
+    /**
+     * Map of created blocks linked to their builder instances.  Used for interface operations.
+     **/
+    protected static final Map<ABlockBase, BuilderBlock> blockMap = new HashMap<>();
+
+    /**
+     * Current block we are built around.
+     **/
+    protected final ABlockBase block;
+
+    BuilderBlock(ABlockBase block) {
+        super(BlockBehaviour.Properties.of().mapColor(MapColor.STONE).strength(block.hardness, block.blastResistance).noOcclusion());
+        this.block = block;
+    }
+
+    BuilderBlock(ABlockBase block, BlockBehaviour.Properties properties) {
+        super(properties);
+        this.block = block;
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onRemove(BlockState state, Level world, BlockPos pos, BlockState newState, boolean isMoving) {
+        //Forward the breaking call to the block to allow for breaking logic.
+        block.onBroken(WrapperWorld.getWrapperFor(world), new Point3D(pos.getX(), pos.getY(), pos.getZ()));
+        super.onRemove(state, world, pos, newState, isMoving);
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public ItemStack getCloneItemStack(BlockGetter world, BlockPos pos, BlockState state) {
+        if (block instanceof BlockBlock) {
+            return new ItemStack(BuilderItem.itemMap.get(((BlockBlock) block).itemReference));
+        } else {
+            return super.getCloneItemStack(world, pos, state);
+        }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public VoxelShape getShape(BlockState state, BlockGetter world, BlockPos pos, CollisionContext context) {
+        if (block instanceof BlockCollision) {
+            return Shapes.create(WrapperWorld.convert(((BlockCollision) block).blockBounds));
+        } else {
+            return super.getShape(state, world, pos, context);
+        }
+    }
+}

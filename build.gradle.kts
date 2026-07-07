@@ -96,6 +96,23 @@ tasks.register<Exec>("buildForge1211") {
     }
 }
 
+tasks.register<Exec>("buildFabric1201") {
+    doFirst { preBuild() }
+    commandLine(
+        "${System.getProperty("java.home")}/bin/java",
+        "-classpath",
+        "${project.projectDir.canonicalPath}/gradle/neoforge-wrapper/gradle-wrapper.jar",
+        "org.gradle.wrapper.GradleWrapperMain",
+        "--no-daemon",
+        "-p",
+        "${project.projectDir.canonicalPath}/mcinterfacefabric1201",
+        "build"
+    )
+    doLast {
+        moveToOut("mcinterfacefabric1201", "1.20.1-fabric-$modVersion")
+    }
+}
+
 tasks.register("buildForgeAll") {
     dependsOn(tasks.getByName("buildForge1122"))
     dependsOn(tasks.getByName("buildForge1165"))

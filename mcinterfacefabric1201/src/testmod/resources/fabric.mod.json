@@ -1,0 +1,22 @@
+{
+    "schemaVersion": 1,
+    "id": "ivtestbed",
+    "version": "1.0.0",
+    "name": "IV Testbed",
+    "description": "Automated test harness for the Immersive Vehicles Fabric port.",
+    "license": "All Rights Reserved",
+    "environment": "*",
+    "entrypoints": {
+        "client": [
+            "ivtestbed.TestbedClient"
+        ],
+        "fabric-gametest": [
+            "ivtestbed.IVGameTests"
+        ]
+    },
+    "depends": {
+        "fabricloader": ">=0.15.0",
+        "fabric-api": "*",
+        "mts": "*"
+    }
+}

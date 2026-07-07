@@ -1,0 +1,10 @@
+accessWidener	v2	named
+
+# RenderStateShard inner classes are protected in vanilla but public under Forge's patches.
+# InterfaceRender builds custom RenderTypes directly from these, so widen them.
+accessible	class	net/minecraft/client/renderer/RenderStateShard$TextureStateShard
+accessible	class	net/minecraft/client/renderer/RenderStateShard$ShaderStateShard
+accessible	class	net/minecraft/client/renderer/RenderStateShard$TransparencyStateShard
+
+# InterfaceRender registers online/GIF DynamicTextures directly with the texture manager.
+accessible	field	net/minecraft/client/Minecraft	textureManager	Lnet/minecraft/client/renderer/texture/TextureManager;

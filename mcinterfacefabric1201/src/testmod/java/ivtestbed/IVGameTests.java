@@ -4,8 +4,12 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 
+import com.ivbettercollisions.VehicleCollisionHandler;
+
 import mcinterfacefabric1201.BuilderEntityExisting;
 import mcinterfacefabric1201.BuilderItem;
+import mcinterfacefabric1201.WrapperWorld;
+import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.items.components.AItemBase;
 import minecrafttransportsimulator.items.instances.ItemVehicle;
 import minecrafttransportsimulator.packloading.PackParser;
@@ -119,6 +123,105 @@ public class IVGameTests implements FabricGameTest {
                 return;
             }
             reloaded.discard();
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Validates the block-shape query that the Better Collisions wall pass is built on: a box overlapping
+     * a solid block must report that block, and a box in open air must report nothing.  This is the
+     * deterministic core of the wall push-out, independent of vehicle physics.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void solidBlockQueryDetectsWalls(GameTestHelper helper) {
+        BlockPos rel = new BlockPos(2, 2, 2);
+        helper.setBlock(rel, Blocks.STONE);
+        BlockPos abs = helper.absolutePos(rel);
+        WrapperWorld world = WrapperWorld.getWrapperFor(helper.getLevel());
+
+        double cx = abs.getX() + 0.5, cy = abs.getY() + 0.5, cz = abs.getZ() + 0.5;
+        List<double[]> hit = world.getSolidBlockCollisions(cx, cy, cz, 0.6, 0.6, 0.6);
+        if (hit.isEmpty()) {
+            helper.fail("getSolidBlockCollisions did not detect an overlapping stone block");
+            return;
+        }
+        //A box floating well above the block must find nothing.
+        List<double[]> miss = world.getSolidBlockCollisions(cx, cy + 6, cz, 0.4, 0.4, 0.4);
+        if (!miss.isEmpty()) {
+            helper.fail("getSolidBlockCollisions reported a collision in open air");
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * End-to-end guard for the wall push-out: spawn a real vehicle, embed a solid block column in its
+     * body, run one collision pass, and assert the vehicle got shoved horizontally out of the block.
+     * With the pass disabled (or broken) the vehicle would stay embedded and the test fails.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE, timeoutTicks = 400)
+    public void vehiclePushedOutOfWall(GameTestHelper helper) {
+        String contentPackID = PackParser.getAllPackIDs().stream().filter(id -> !id.equals("mts")).sorted().findFirst().orElse(null);
+        if (contentPackID == null) {
+            helper.fail("No content pack loaded");
+            return;
+        }
+        ItemVehicle vehicleItem = BuilderItem.itemMap.keySet().stream()
+                .filter(item -> item instanceof ItemVehicle && ((ItemVehicle) item).definition.packID.equals(contentPackID))
+                .map(item -> (ItemVehicle) item)
+                .min(Comparator.comparing(AItemBase::getRegistrationName))
+                .orElse(null);
+        if (vehicleItem == null) {
+            helper.fail("Content pack " + contentPackID + " has no vehicles");
+            return;
+        }
+
+        //Lay a floor and place the vehicle on it via the real item-use path.
+        for (int dx = 2; dx <= 6; dx++) {
+            for (int dz = 2; dz <= 6; dz++) {
+                helper.setBlock(new BlockPos(dx, 0, dz), Blocks.STONE);
+            }
+        }
+        BlockPos floorRel = new BlockPos(4, 1, 4);
+        BlockPos floorAbs = helper.absolutePos(floorRel.below());
+        Player player = helper.makeMockPlayer();
+        ItemStack stack = new ItemStack(BuilderItem.itemMap.get(vehicleItem));
+        player.setItemInHand(InteractionHand.MAIN_HAND, stack);
+        BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(floorAbs).add(0, 0.5, 0), Direction.UP, floorAbs, false);
+        stack.useOn(new UseOnContext(player, InteractionHand.MAIN_HAND, hit));
+
+        helper.runAfterDelay(80, () -> {
+            EntityVehicleF_Physics vehicle = WrapperWorld.getWrapperFor(helper.getLevel())
+                    .getEntitiesOfType(EntityVehicleF_Physics.class).stream().findFirst().orElse(null);
+            if (vehicle == null) {
+                helper.fail("Vehicle " + vehicleItem.getRegistrationName() + " did not spawn");
+                return;
+            }
+            if (vehicle.allBlockCollisionBoxes.isEmpty()) {
+                helper.fail("Spawned vehicle has no block collision boxes to test against");
+                return;
+            }
+            vehicle.ticksExisted = 100;   //ensure we are past the spawn grace period
+
+            //Embed a solid column in the vehicle body so at least one collision box is penetrating.
+            int bx = (int) Math.floor(vehicle.position.x);
+            int by = (int) Math.floor(vehicle.position.y);
+            int bz = (int) Math.floor(vehicle.position.z);
+            for (int dy = 0; dy <= 2; dy++) {
+                helper.getLevel().setBlockAndUpdate(new BlockPos(bx, by + dy, bz), Blocks.STONE.defaultBlockState());
+            }
+
+            double beforeX = vehicle.position.x;
+            double beforeZ = vehicle.position.z;
+            for (int i = 0; i < 3; i++) {
+                VehicleCollisionHandler.onWorldTickEnd(helper.getLevel(), false);
+            }
+            double movedX = Math.abs(vehicle.position.x - beforeX);
+            double movedZ = Math.abs(vehicle.position.z - beforeZ);
+            if (movedX < 0.05 && movedZ < 0.05) {
+                helper.fail("Vehicle was not pushed out of the embedded block (dx=" + movedX + ", dz=" + movedZ + ")");
+                return;
+            }
             helper.succeed();
         });
     }

@@ -138,6 +138,16 @@ public class WrapperWorld extends AWrapperWorld {
         }
     }
 
+    /**
+     * Returns the already-created wrapper for the passed-in world, or null if none exists yet.
+     * Unlike {@link #getWrapperFor(Level)} this never creates a wrapper, so it has no side effects
+     * (no disk load, no packet send).  Use this from per-tick callbacks that fire for every world,
+     * to avoid spinning up wrappers for worlds that have no MTS activity.
+     */
+    public static WrapperWorld getWrapperIfPresent(Level world) {
+        return world != null ? worldWrappers.get(world) : null;
+    }
+
     private WrapperWorld(Level world) {
         super();
         this.world = world;
@@ -693,6 +703,39 @@ public class WrapperWorld extends AWrapperWorld {
             }
         }
         return false;
+    }
+
+    /**
+     * Returns the collision AABBs of all solid blocks overlapping the box defined by the passed-in
+     * world-space center and half-extents.  Each returned entry is a {minX, minY, minZ, maxX, maxY, maxZ}
+     * array.  Leaves and liquids are intentionally excluded: this is used by the "Better Collisions"
+     * wall push-out pass, which only cares about solid terrain.  This method is read-only - it does not
+     * modify the world or any {@link BoundingBox}, so it is safe to call any number of times per tick.
+     */
+    @SuppressWarnings("deprecation")
+    public List<double[]> getSolidBlockCollisions(double centerX, double centerY, double centerZ, double halfX, double halfY, double halfZ) {
+        List<double[]> result = new ArrayList<>();
+        AABB mcBox = new AABB(centerX - halfX, centerY - halfY, centerZ - halfZ, centerX + halfX, centerY + halfY, centerZ + halfZ);
+        VoxelShape mcShape = Shapes.create(mcBox);
+        for (int i = (int) Math.floor(mcBox.minX); i < Math.ceil(mcBox.maxX); ++i) {
+            for (int j = (int) Math.floor(mcBox.minY); j < Math.ceil(mcBox.maxY); ++j) {
+                for (int k = (int) Math.floor(mcBox.minZ); k < Math.ceil(mcBox.maxZ); ++k) {
+                    BlockPos pos = BlockPos.containing(i, j, k);
+                    if (world.isLoaded(pos) && !world.isEmptyBlock(pos)) {
+                        BlockState state = world.getBlockState(pos);
+                        if (!state.is(BlockTags.LEAVES)) {
+                            VoxelShape collisionShape = state.getCollisionShape(world, pos).move(i, j, k);
+                            if (!collisionShape.isEmpty() && Shapes.joinIsNotEmpty(mcShape, collisionShape, BooleanOp.AND)) {
+                                for (AABB aabb : collisionShape.toAabbs()) {
+                                    result.add(new double[] { aabb.minX, aabb.minY, aabb.minZ, aabb.maxX, aabb.maxY, aabb.maxZ });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     @Override

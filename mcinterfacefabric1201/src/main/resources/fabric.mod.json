@@ -15,10 +15,12 @@
     "environment": "*",
     "entrypoints": {
         "main": [
-            "mcinterfacefabric1201.InterfaceLoader"
+            "mcinterfacefabric1201.InterfaceLoader",
+            "com.ivbettercollisions.IVBetterCollisions"
         ],
         "client": [
-            "mcinterfacefabric1201.InterfaceClientLoader"
+            "mcinterfacefabric1201.InterfaceClientLoader",
+            "com.ivbettercollisions.ClientEvents"
         ]
     },
     "mixins": [

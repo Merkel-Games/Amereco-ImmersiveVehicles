@@ -77,8 +77,11 @@ public abstract class LevelRendererMixin {
     /**
      * This changes the heightmap of the rain checker to block rain from vehicles.
      * Better than trying to do block placement which has a host of issues.
+     * <p>
+     * {@code require = 0}: if another rendering mod ever redirects this same {@code getHeight} call,
+     * we degrade to a cosmetic issue (rain renders over vehicles) rather than crashing the game.
      */
-    @Redirect(method = "renderSnowAndRain", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;getHeight(Lnet/minecraft/world/level/levelgen/Heightmap$Types;II)I"))
+    @Redirect(method = "renderSnowAndRain", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;getHeight(Lnet/minecraft/world/level/levelgen/Heightmap$Types;II)I"), require = 0)
     public int redirect_renderSnowAndRain(Level world, Heightmap.Types pHeightmapType, int pX, int pZ) {
         Point3D position = new Point3D(pX + 0.5, world.getHeight(Heightmap.Types.MOTION_BLOCKING, pX, pZ), pZ + 0.5);
         WrapperWorld.getWrapperFor(world).adjustHeightForRain(position);

@@ -16,7 +16,8 @@
     "entrypoints": {
         "main": [
             "mcinterfacefabric1201.InterfaceLoader",
-            "com.ivbettercollisions.IVBetterCollisions"
+            "com.ivbettercollisions.IVBetterCollisions",
+            "com.ivclimbtweaks.IVClimbTweaks"
         ],
         "client": [
             "mcinterfacefabric1201.InterfaceClientLoader",

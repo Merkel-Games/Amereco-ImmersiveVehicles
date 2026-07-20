@@ -1,7 +1,9 @@
 package ivtestbed;
 
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.ivbettercollisions.VehicleCollisionHandler;
@@ -11,7 +13,9 @@ import mcinterfacefabric1201.BuilderItem;
 import mcinterfacefabric1201.WrapperWorld;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.items.components.AItemBase;
+import minecrafttransportsimulator.items.components.AItemPack;
 import minecrafttransportsimulator.items.instances.ItemVehicle;
+import minecrafttransportsimulator.jsondefs.JSONPart;
 import minecrafttransportsimulator.packloading.PackParser;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.core.BlockPos;
@@ -224,5 +228,46 @@ public class IVGameTests implements FabricGameTest {
             }
             helper.succeed();
         });
+    }
+
+    /**
+     * Verifies the IVClimbTweaks init hook applied the configured ground.climbHeight overrides to the OCP
+     * wheel parts (huge=1.5, large=1.0, medium=1.0, small=0.5). If the hook did not run (or ran before the
+     * pack was parsed), the wheels would still read the pack default 1.5 and this fails.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void ocpClimbHeightOverridden(GameTestHelper helper) {
+        if (!PackParser.getAllPackIDs().contains("mtsofficialpack")) {
+            helper.fail("OCP (mtsofficialpack) not loaded");
+            return;
+        }
+        Map<String, Float> expected = new HashMap<>();
+        expected.put("wheelhuge", 1.5F);
+        expected.put("wheellarge", 1.0F);
+        expected.put("wheelmedium", 1.0F);
+        expected.put("wheelsmall", 0.5F);
+
+        int checked = 0;
+        for (AItemPack<?> item : PackParser.getAllItemsForPack("mtsofficialpack", false)) {
+            Float want = expected.get(item.definition.systemName);
+            if (want != null && item.definition instanceof JSONPart) {
+                JSONPart part = (JSONPart) item.definition;
+                if (part.ground == null) {
+                    helper.fail("OCP " + item.definition.systemName + " unexpectedly has no ground device");
+                    return;
+                }
+                if (Math.abs(part.ground.climbHeight - want) > 1.0e-4) {
+                    helper.fail("OCP " + item.definition.systemName + " climbHeight=" + part.ground.climbHeight
+                            + ", expected " + want + " (IVClimbTweaks hook did not apply)");
+                    return;
+                }
+                ++checked;
+            }
+        }
+        if (checked < expected.size()) {
+            helper.fail("Only matched " + checked + "/" + expected.size() + " OCP wheels; systemNames changed?");
+            return;
+        }
+        helper.succeed();
     }
 }

@@ -28,6 +28,6 @@ public class IVBetterCollisions implements ModInitializer {
         // Server authority: run the pass at the END of every server world tick, after MTS has moved
         // vehicles this tick.  Registered after the port's own tick handler, so it runs after it.
         ServerTickEvents.END_WORLD_TICK.register(level -> VehicleCollisionHandler.onWorldTickEnd(level, false));
-        LOGGER.info("[IVBC] Better Collisions initialised (enabled={}, v2v={})", CollisionConfig.enabled, CollisionConfig.v2vEnabled);
+        LOGGER.info("[IVBC] Better Collisions initialised (enabled={}, v2v={}, v2vMode={})", CollisionConfig.enabled, CollisionConfig.v2vEnabled, CollisionConfig.v2vMode);
     }
 }

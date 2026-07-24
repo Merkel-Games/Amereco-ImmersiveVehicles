@@ -107,7 +107,10 @@ public final class CollisionConfig {
      * a v1 file simply lacks the new keys, so they deserialize to these defaults.
      */
     private static final class Data {
-        int configVersion = CURRENT_VERSION;
+        // Deliberately 0, NOT CURRENT_VERSION: Gson runs field initializers (Data has a default
+        // constructor), so a v1 file with no configVersion key must deserialize to a value that is
+        // detectably old - otherwise migration never triggers.  Set explicitly before every write.
+        int configVersion = 0;
         boolean enabled = true;
 
         double epsilon = 0.1;
@@ -172,6 +175,7 @@ public final class CollisionConfig {
                 }
             } else {
                 Files.createDirectories(configDir);
+                data.configVersion = CURRENT_VERSION;
                 try (Writer writer = Files.newBufferedWriter(file)) {
                     GSON.toJson(data, writer);
                 }

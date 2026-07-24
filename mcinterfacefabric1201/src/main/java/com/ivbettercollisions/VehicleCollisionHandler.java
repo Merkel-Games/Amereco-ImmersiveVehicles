@@ -163,7 +163,7 @@ public final class VehicleCollisionHandler {
         if (ConfigSystem.settings.general.noclipVehicles.value) {
             return;
         }
-        if (vehicle.ticksExisted < CollisionConfig.minTickAge || vehicle.allBlockCollisionBoxes.isEmpty()) {
+        if (!isCollidable(vehicle) || vehicle.allBlockCollisionBoxes.isEmpty()) {
             return;
         }
         double margin = CollisionConfig.wallBoxMargin;
@@ -267,8 +267,14 @@ public final class VehicleCollisionHandler {
         int count = vehicles.size();
         for (int a = 0; a < count; a++) {
             EntityVehicleF_Physics va = vehicles.get(a);
+            if (!isCollidable(va)) {
+                continue;   // don't let an unfinished/wheel-less frame push (or be pushed by) others
+            }
             for (int b = a + 1; b < count; b++) {
                 EntityVehicleF_Physics vb = vehicles.get(b);
+                if (!isCollidable(vb)) {
+                    continue;
+                }
                 double dist = va.position.distanceTo(vb.position);
                 if (dist > broad) {
                     continue;
@@ -325,6 +331,20 @@ public final class VehicleCollisionHandler {
                 }
             }
         }
+    }
+
+    /**
+     * A vehicle takes part in collision correction only once it is an established, complete ground
+     * vehicle: past the spawn-settling window AND with a ready ground-device set (front+rear plus a
+     * side, per MTS's own {@link minecrafttransportsimulator.baseclasses.VehicleGroundDeviceCollection#isReady()}).
+     * A freshly-placed frame still missing its wheels is NOT ready; without ground devices it can't be
+     * held up, so shoving it every tick - into walls or off other vehicles - makes it thrash violently
+     * (GMod-style) and drag whatever it overlaps along with it.  We leave such vehicles alone until
+     * they're built.  {@code isReady()} counts liquid-collision boxes too, so boats/complete vehicles
+     * are unaffected; only genuinely unfinished ones are skipped.
+     */
+    private static boolean isCollidable(EntityVehicleF_Physics vehicle) {
+        return vehicle.ticksExisted >= CollisionConfig.minTickAge && vehicle.groundDeviceCollective.isReady();
     }
 
     private static boolean shareTowChain(EntityVehicleF_Physics a, EntityVehicleF_Physics b) {

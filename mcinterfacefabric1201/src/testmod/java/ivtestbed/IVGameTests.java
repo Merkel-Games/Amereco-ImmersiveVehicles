@@ -159,12 +159,14 @@ public class IVGameTests implements FabricGameTest {
     }
 
     /**
-     * End-to-end guard for the wall push-out: spawn a real vehicle, embed a solid block column in its
-     * body, run one collision pass, and assert the vehicle got shoved horizontally out of the block.
-     * With the pass disabled (or broken) the vehicle would stay embedded and the test fails.
+     * Guards the "leave unfinished vehicles alone" rule: place a bare vehicle frame (no wheels, so
+     * groundDeviceCollective.isReady() is false), embed a solid block column in its body, run several
+     * collision passes, and assert it was NOT moved.  A frame with no ground devices can't be held up,
+     * so shoving it every tick makes it thrash across the world (the reported bug); the readiness guard
+     * in VehicleCollisionHandler#isCollidable must skip it.  If that guard is removed this test fails.
      */
     @GameTest(template = FabricGameTest.EMPTY_STRUCTURE, timeoutTicks = 400)
-    public void vehiclePushedOutOfWall(GameTestHelper helper) {
+    public void unfinishedVehicleNotShovedByCollisions(GameTestHelper helper) {
         String contentPackID = PackParser.getAllPackIDs().stream().filter(id -> !id.equals("mts")).sorted().findFirst().orElse(null);
         if (contentPackID == null) {
             helper.fail("No content pack loaded");
@@ -205,7 +207,16 @@ public class IVGameTests implements FabricGameTest {
                 helper.fail("Spawned vehicle has no block collision boxes to test against");
                 return;
             }
-            vehicle.ticksExisted = 100;   //ensure we are past the spawn grace period
+            vehicle.ticksExisted = 100;   //past the spawn grace period, so only the readiness guard gates us
+
+            //A vehicle placed as a bare frame has no wheels, so groundDeviceCollective.isReady() is false.
+            //Confirm that premise, then confirm the guard: the handler must leave such an unfinished vehicle
+            //completely alone.  Shoving a frame that has no ground devices to hold it up makes it thrash
+            //across the world (the reported bug), so even with a block embedded in it we must not move it.
+            if (vehicle.groundDeviceCollective.isReady()) {
+                helper.fail("Test premise broken: a freshly-placed bare frame unexpectedly reports ready");
+                return;
+            }
 
             //Embed a solid column in the vehicle body so at least one collision box is penetrating.
             int bx = (int) Math.floor(vehicle.position.x);
@@ -222,8 +233,8 @@ public class IVGameTests implements FabricGameTest {
             }
             double movedX = Math.abs(vehicle.position.x - beforeX);
             double movedZ = Math.abs(vehicle.position.z - beforeZ);
-            if (movedX < 0.05 && movedZ < 0.05) {
-                helper.fail("Vehicle was not pushed out of the embedded block (dx=" + movedX + ", dz=" + movedZ + ")");
+            if (movedX > 0.05 || movedZ > 0.05) {
+                helper.fail("Unfinished (not-ready) vehicle must not be shoved but moved (dx=" + movedX + ", dz=" + movedZ + ")");
                 return;
             }
             helper.succeed();

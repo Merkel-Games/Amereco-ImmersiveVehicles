@@ -6,11 +6,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.ivbettercollisions.CollisionMath;
+import com.ivbettercollisions.ContactManifold;
 import com.ivbettercollisions.VehicleCollisionHandler;
+import com.ivbettercollisions.VehicleCollisionPass;
 
 import mcinterfacefabric1201.BuilderEntityExisting;
 import mcinterfacefabric1201.BuilderItem;
 import mcinterfacefabric1201.WrapperWorld;
+import minecrafttransportsimulator.baseclasses.BoundingBox;
+import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.items.components.AItemBase;
 import minecrafttransportsimulator.items.components.AItemPack;
@@ -280,5 +285,285 @@ public class IVGameTests implements FabricGameTest {
             return;
         }
         helper.succeed();
+    }
+
+    /**
+     * Pure-math checks for the Ultimate Collisions impulse model: mass-weighted split, momentum
+     * conservation, separating pairs, restitution scaling and the per-vehicle delta-v clamp.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void collisionMathImpulse(GameTestHelper helper) {
+        //Equal masses, head-on at closing speed 1, e=0: each side sheds 0.5.
+        double j = CollisionMath.impulseMagnitude(-1.0, 0, 1000, 1000);
+        if (Math.abs(j / 1000 - 0.5) > 1.0e-9) {
+            helper.fail("Equal-mass impulse split wrong: dv=" + (j / 1000));
+            return;
+        }
+        //10:1 mass ratio: the light vehicle takes 10x the delta-v, total closing speed fully removed.
+        double j2 = CollisionMath.impulseMagnitude(-1.0, 0, 1000, 100);
+        double dvHeavy = j2 / 1000;
+        double dvLight = j2 / 100;
+        if (Math.abs(dvLight / dvHeavy - 10.0) > 1.0e-9 || Math.abs(dvHeavy + dvLight - 1.0) > 1.0e-9) {
+            helper.fail("Mass-ratio impulse wrong: dvHeavy=" + dvHeavy + " dvLight=" + dvLight);
+            return;
+        }
+        //Separating pair gets no impulse.
+        if (CollisionMath.impulseMagnitude(0.5, 0.25, 1000, 1000) != 0) {
+            helper.fail("Separating pair received an impulse");
+            return;
+        }
+        //Restitution scales the impulse by (1+e).
+        double j3 = CollisionMath.impulseMagnitude(-1.0, 0.25, 1000, 1000);
+        if (Math.abs(j3 / j - 1.25) > 1.0e-9) {
+            helper.fail("Restitution scaling wrong: ratio=" + (j3 / j));
+            return;
+        }
+        //Clamp caps the lighter vehicle's delta-v.
+        double clamped = CollisionMath.clampImpulse(1.0e9, 1000, 100, 1.5);
+        if (Math.abs(clamped - 1.5 * 100) > 1.0e-9) {
+            helper.fail("Impulse clamp wrong: " + clamped);
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Contact-manifold math: depth-weighted normal blending and contact points, corner blending,
+     * degenerate fallbacks, and the vertical (stacking) contact filter of the box narrow phase.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void collisionMathManifold(GameTestHelper helper) {
+        ContactManifold m = new ContactManifold();
+
+        //Two +X contacts blend to a +X normal; contact point and penetration are depth-weighted.
+        m.reset();
+        m.addContact(1, 0, 0.2, 10, 64, 5);
+        m.addContact(1, 0, 0.1, 10, 64, 8);
+        if (!m.finalizeManifold(new Point3D()) || Math.abs(m.normal.x - 1) > 1.0e-9 || Math.abs(m.normal.z) > 1.0e-9
+                || Math.abs(m.contact.z - 6.0) > 1.0e-9 || Math.abs(m.penetration - 0.2) > 1.0e-9) {
+            helper.fail("Basic manifold blend wrong: n=" + m.normal + " c=" + m.contact + " pen=" + m.penetration);
+            return;
+        }
+        //Equal +X and +Z contacts blend to a diagonal normal (corner hit).
+        m.reset();
+        m.addContact(1, 0, 0.1, 0, 0, 0);
+        m.addContact(0, 1, 0.1, 0, 0, 0);
+        m.finalizeManifold(new Point3D());
+        if (Math.abs(m.normal.x - Math.sqrt(0.5)) > 1.0e-6 || Math.abs(m.normal.z - Math.sqrt(0.5)) > 1.0e-6) {
+            helper.fail("Corner blend wrong: n=" + m.normal);
+            return;
+        }
+        //Opposing MTVs cancel: the fallback direction takes over.
+        m.reset();
+        m.addContact(1, 0, 0.1, 0, 0, 0);
+        m.addContact(-1, 0, 0.1, 0, 0, 0);
+        m.finalizeManifold(new Point3D(0, 0, 4));
+        if (m.impulseSkipped || Math.abs(m.normal.z - 1) > 1.0e-9) {
+            helper.fail("Fallback normal wrong: n=" + m.normal + " skipped=" + m.impulseSkipped);
+            return;
+        }
+        //Cancelled MTVs plus a zero fallback: +X default with the impulse flagged skipped.
+        m.reset();
+        m.addContact(1, 0, 0.1, 0, 0, 0);
+        m.addContact(-1, 0, 0.1, 0, 0, 0);
+        m.finalizeManifold(new Point3D());
+        if (!m.impulseSkipped || Math.abs(m.normal.x - 1) > 1.0e-9) {
+            helper.fail("Degenerate handling wrong: n=" + m.normal + " skipped=" + m.impulseSkipped);
+            return;
+        }
+        //Narrow phase: a mostly-vertical (stacking) overlap must be filtered out entirely...
+        BoundingBox base = new BoundingBox(new Point3D(0, 64, 0), 1, 0.5, 1);
+        BoundingBox stacked = new BoundingBox(new Point3D(0, 64.9, 0), 1, 0.5, 1);
+        m.reset();
+        VehicleCollisionPass.collectContacts(List.of(base), List.of(stacked), m);
+        if (!m.isEmpty()) {
+            helper.fail("Stacking contact was not filtered");
+            return;
+        }
+        //...while a genuine side contact yields the expected +X MTV.
+        BoundingBox side = new BoundingBox(new Point3D(1.8, 64, 0), 1, 0.5, 1);
+        m.reset();
+        VehicleCollisionPass.collectContacts(List.of(base), List.of(side), m);
+        if (m.isEmpty()) {
+            helper.fail("Side contact not detected");
+            return;
+        }
+        m.finalizeManifold(new Point3D());
+        if (Math.abs(m.normal.x - 1) > 1.0e-9 || Math.abs(m.penetration - 0.2) > 1.0e-6) {
+            helper.fail("Side contact MTV wrong: n=" + m.normal + " pen=" + m.penetration);
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Wall impact response math: head-on leaves only the restitution rebound, a shallow graze keeps
+     * (1-friction) of the tangential speed, vertical motion is preserved, and the off-centre yaw
+     * impulse flips sign with the lever-arm side and honors its cap.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void collisionMathWallResponse(GameTestHelper helper) {
+        Point3D n = new Point3D(1, 0, 0);
+        Point3D out = new Point3D();
+
+        //Head-on at speed 1 with e=0.2: outgoing normal speed 0.2, no tangential, y preserved.
+        CollisionMath.wallResponse(new Point3D(-1.0, -0.05, 0), n, 0.2, 0.25, out);
+        if (Math.abs(out.x - 0.2) > 1.0e-9 || Math.abs(out.z) > 1.0e-9 || Math.abs(out.y + 0.05) > 1.0e-9) {
+            helper.fail("Head-on response wrong: " + out);
+            return;
+        }
+        //20-degree graze with friction 0.25: tangential keeps 75%, normal component removed.
+        CollisionMath.wallResponse(new Point3D(-0.342, 0, 0.940), n, 0, 0.25, out);
+        if (Math.abs(out.z - 0.940 * 0.75) > 1.0e-6 || Math.abs(out.x) > 1.0e-9) {
+            helper.fail("Graze response wrong: " + out);
+            return;
+        }
+        //Yaw flips sign with the lever side, equal magnitude (and is mass-independent by construction).
+        double yawFront = CollisionMath.wallYawDegrees(new Point3D(0, 0, 2), n, 0.5, 0.2, 1.0, 45);
+        double yawBack = CollisionMath.wallYawDegrees(new Point3D(0, 0, -2), n, 0.5, 0.2, 1.0, 45);
+        if (yawFront == 0 || Math.abs(yawFront + yawBack) > 1.0e-9) {
+            helper.fail("Yaw handedness wrong: front=" + yawFront + " back=" + yawBack);
+            return;
+        }
+        //Cap honored on an extreme lever.
+        double capped = CollisionMath.wallYawDegrees(new Point3D(0, 0, 100), n, 5, 0.2, 1.0, 25);
+        if (Math.abs(capped) > 25 + 1.0e-9) {
+            helper.fail("Yaw cap not honored: " + capped);
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Runs the box narrow phase against a REAL vehicle's block hitbox set (a bare placed frame - no
+     * readiness needed, we call the pure functions directly) and a probe box clipping it, asserting a
+     * sane manifold: contacts found, unit normal, positive penetration.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE, timeoutTicks = 400)
+    public void manifoldOnRealVehicleBoxes(GameTestHelper helper) {
+        ItemVehicle vehicleItem = firstVehicleItem(helper);
+        if (vehicleItem == null) {
+            return;
+        }
+        placeVehicle(helper, vehicleItem, new BlockPos(4, 1, 4));
+        helper.runAfterDelay(80, () -> {
+            EntityVehicleF_Physics vehicle = vehicleNear(helper, new BlockPos(4, 1, 4), 8);
+            if (vehicle == null) {
+                helper.fail("Vehicle did not spawn");
+                return;
+            }
+            if (vehicle.allBlockCollisionBoxes.isEmpty()) {
+                helper.fail("Spawned vehicle has no block collision boxes");
+                return;
+            }
+            BoundingBox probe = new BoundingBox(vehicle.position.copy().add(1.0, 0.5, 0), 1.5, 3, 3);
+            ContactManifold m = new ContactManifold();
+            m.reset();
+            VehicleCollisionPass.collectContacts(vehicle.allBlockCollisionBoxes, List.of(probe), m);
+            if (m.isEmpty()) {
+                helper.fail("No contacts between real vehicle boxes and probe");
+                return;
+            }
+            m.finalizeManifold(new Point3D(1, 0, 0));
+            double length = Math.hypot(m.normal.x, m.normal.z);
+            if (Math.abs(length - 1) > 1.0e-6 || m.penetration <= 0) {
+                helper.fail("Manifold not sane: |n|=" + length + " pen=" + m.penetration);
+                return;
+            }
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Extends the unfinished-vehicle guard to the v2v path: two bare frames placed side by side (no
+     * wheels, not ready) must not be shoved by the collision system - by the per-tick event handler or
+     * by explicit passes - no matter how their boxes overlap.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE, timeoutTicks = 400)
+    public void overlappingUnfinishedVehiclesNotMoved(GameTestHelper helper) {
+        ItemVehicle vehicleItem = firstVehicleItem(helper);
+        if (vehicleItem == null) {
+            return;
+        }
+        placeVehicle(helper, vehicleItem, new BlockPos(3, 1, 4));
+        placeVehicle(helper, vehicleItem, new BlockPos(5, 1, 4));
+        helper.runAfterDelay(80, () -> {
+            List<EntityVehicleF_Physics> nearby = WrapperWorld.getWrapperFor(helper.getLevel())
+                    .getEntitiesOfType(EntityVehicleF_Physics.class).stream()
+                    .filter(v -> v.position.distanceTo(toPoint(helper, new BlockPos(4, 1, 4))) < 8)
+                    .toList();
+            if (nearby.size() < 2) {
+                helper.fail("Expected 2 frames near the test area, found " + nearby.size());
+                return;
+            }
+            for (EntityVehicleF_Physics vehicle : nearby) {
+                vehicle.ticksExisted = 100;   //past the spawn grace period, so only the readiness guard gates us
+            }
+            double[][] before = new double[nearby.size()][2];
+            for (int i = 0; i < nearby.size(); i++) {
+                before[i][0] = nearby.get(i).position.x;
+                before[i][1] = nearby.get(i).position.z;
+            }
+            for (int i = 0; i < 3; i++) {
+                VehicleCollisionHandler.onWorldTickEnd(helper.getLevel(), false);
+            }
+            for (int i = 0; i < nearby.size(); i++) {
+                double moved = Math.hypot(nearby.get(i).position.x - before[i][0], nearby.get(i).position.z - before[i][1]);
+                if (moved > 0.05) {
+                    helper.fail("Unfinished frame " + i + " was shoved " + moved + " blocks");
+                    return;
+                }
+            }
+            helper.succeed();
+        });
+    }
+
+    // ---- shared helpers for the vehicle-placement tests -------------------------------------------
+
+    /** First (alphabetically) vehicle item of the first non-mts pack; fails the test and returns null if absent. */
+    private static ItemVehicle firstVehicleItem(GameTestHelper helper) {
+        String contentPackID = PackParser.getAllPackIDs().stream().filter(id -> !id.equals("mts")).sorted().findFirst().orElse(null);
+        if (contentPackID == null) {
+            helper.fail("No content pack loaded");
+            return null;
+        }
+        ItemVehicle vehicleItem = BuilderItem.itemMap.keySet().stream()
+                .filter(item -> item instanceof ItemVehicle && ((ItemVehicle) item).definition.packID.equals(contentPackID))
+                .map(item -> (ItemVehicle) item)
+                .min(Comparator.comparing(AItemBase::getRegistrationName))
+                .orElse(null);
+        if (vehicleItem == null) {
+            helper.fail("Content pack " + contentPackID + " has no vehicles");
+        }
+        return vehicleItem;
+    }
+
+    /** Lays a stone floor around the position and places the vehicle on it via the real item-use path. */
+    private static void placeVehicle(GameTestHelper helper, ItemVehicle vehicleItem, BlockPos floorRel) {
+        for (int dx = 2; dx <= 6; dx++) {
+            for (int dz = 2; dz <= 6; dz++) {
+                helper.setBlock(new BlockPos(dx, 0, dz), Blocks.STONE);
+            }
+        }
+        BlockPos floorAbs = helper.absolutePos(floorRel.below());
+        Player player = helper.makeMockPlayer();
+        ItemStack stack = new ItemStack(BuilderItem.itemMap.get(vehicleItem));
+        player.setItemInHand(InteractionHand.MAIN_HAND, stack);
+        BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(floorAbs).add(0, 0.5, 0), Direction.UP, floorAbs, false);
+        stack.useOn(new UseOnContext(player, InteractionHand.MAIN_HAND, hit));
+    }
+
+    /** Closest spawned vehicle within maxDistance of the structure-relative position, or null. */
+    private static EntityVehicleF_Physics vehicleNear(GameTestHelper helper, BlockPos rel, double maxDistance) {
+        Point3D target = toPoint(helper, rel);
+        return WrapperWorld.getWrapperFor(helper.getLevel()).getEntitiesOfType(EntityVehicleF_Physics.class).stream()
+                .filter(v -> v.position.distanceTo(target) < maxDistance)
+                .min(Comparator.comparingDouble(v -> v.position.distanceTo(target)))
+                .orElse(null);
+    }
+
+    private static Point3D toPoint(GameTestHelper helper, BlockPos rel) {
+        BlockPos abs = helper.absolutePos(rel);
+        return new Point3D(abs.getX() + 0.5, abs.getY(), abs.getZ() + 0.5);
     }
 }

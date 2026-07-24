@@ -27,7 +27,17 @@ import net.minecraft.world.level.Level;
  * This is a clean-room reimplementation of the technique used by the Forge "IV Better Collisions" addon,
  * written against IV's own public APIs (no reflection).  It only ever mutates a vehicle's position, motion
  * and orientation - it never touches blocks or the world - so it is safe to run on both the server (the
- * authority) and the client (prediction), keeping the two in agreement so vehicles don't rubber-band.
+ * authority) and the client (prediction).
+ * <p>
+ * <b>Netcode:</b> every position/orientation correction is applied through
+ * {@link minecrafttransportsimulator.entities.instances.AEntityVehicleD_Moving#applyExternalCollisionCorrection}
+ * rather than by writing {@code position}/{@code orientation} directly.  MTS reconciles client and server by
+ * comparing accumulated motion/rotation <em>deltas</em>, not absolute position; a correction applied outside
+ * that channel becomes a permanent offset the rubberband can never heal (and, run independently on both
+ * sides, makes them fight - the server hitbox lags behind in a wall while the client drives on).  Folding
+ * the correction into the delta accumulators (and broadcasting it from the server) keeps the two sides in
+ * lock-step, so walls feel solid with no rubberband snap-back.  Motion is left as a direct field write - it
+ * already flows through the delta channel via {@code motionApplied} on the next tick.
  */
 public final class VehicleCollisionHandler {
 
@@ -104,7 +114,7 @@ public final class VehicleCollisionHandler {
                 continue;
             }
             Point3D knock = entry.getValue();
-            vehicle.position.add(knock);
+            vehicle.applyExternalCollisionCorrection(knock, 0);
             knock.scale(keep);
             if (knock.length() < MIN_KNOCKBACK) {
                 kIt.remove();
@@ -121,7 +131,7 @@ public final class VehicleCollisionHandler {
             }
             double spin = entry.getValue();
             double applied = clamp(spin, -MAX_SPIN_PER_TICK, MAX_SPIN_PER_TICK);
-            vehicle.orientation.rotateY(applied).convertToAngles();
+            vehicle.applyExternalCollisionCorrection(null, applied);
             // Drain the applied part, decay the rest, so v2vSpinFactor is roughly the total rotation but
             // never lands more than MAX_SPIN_PER_TICK in a single tick.
             double remaining = (spin - applied) * keep;
@@ -232,7 +242,9 @@ public final class VehicleCollisionHandler {
         if (totalX == 0 && totalZ == 0) {
             return;
         }
-        vehicle.position.add(totalX, 0, totalZ);
+        // Route through the delta-sync channel (see AEntityVehicleD_Moving#applyExternalCollisionCorrection)
+        // so the server-authoritative push-out reconciles with the client instead of diverging.
+        vehicle.applyExternalCollisionCorrection(new Point3D(totalX, 0, totalZ), 0);
         // Wall slide: cancel only the motion component driving into the wall; keep tangential motion.
         if (totalX > 0 && vehicle.motion.x < 0) {
             vehicle.motion.x = 0;
@@ -282,10 +294,11 @@ public final class VehicleCollisionHandler {
                 double ratioA = massB / (massA + massB);   // lighter vehicle moves more
                 double ratioB = massA / (massA + massB);
 
-                // Positional separation so they never stay interpenetrating.
+                // Positional separation so they never stay interpenetrating. Routed through the
+                // delta-sync channel (copy() so the shared `normal` is left intact for the impulse below).
                 double separation = overlap + CollisionConfig.v2vSeparationEpsilon;
-                va.position.addScaled(normal, -separation * ratioA);
-                vb.position.addScaled(normal, separation * ratioB);
+                va.applyExternalCollisionCorrection(normal.copy().scale(-separation * ratioA), 0);
+                vb.applyExternalCollisionCorrection(normal.copy().scale(separation * ratioB), 0);
 
                 // Impulse / spin: only when the two are actually closing along the normal.
                 Point3D relVel = vb.motion.copy().subtract(va.motion);

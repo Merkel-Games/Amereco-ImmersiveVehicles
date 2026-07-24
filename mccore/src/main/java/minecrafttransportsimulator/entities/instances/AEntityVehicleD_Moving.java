@@ -1199,4 +1199,62 @@ abstract class AEntityVehicleD_Moving extends AEntityVehicleC_Colliding {
         data.setDouble("serverDeltaP", serverDeltaP);
         return data;
     }
+
+    // ================================================================================================
+    // IV Better Collisions addon hook - present ONLY on the fabricPort1201 branch, NOT on master.
+    // This is deliberately ONE public method appended at the very end of the class: it adds no imports
+    // and modifies nothing above it, so a merge from master can only ever conflict on this single block.
+    // If that happens the resolution is trivial - keep this whole block verbatim. Sole consumer:
+    // package com.ivbettercollisions (com.ivbettercollisions.VehicleCollisionHandler).
+    // ================================================================================================
+    /**
+     * Applies an external, post-physics collision correction (wall push-out, vehicle separation,
+     * knockback or spin) THROUGH the netcode delta-sync channel, instead of editing {@link #position} /
+     * {@link #orientation} behind its back.
+     * <p>
+     * Client/server reconciliation in {@link #moveVehicle()} keeps the two sides in step by comparing
+     * <em>accumulated motion/rotation deltas</em> - not absolute position. A correction that bypasses
+     * those accumulators therefore becomes a permanent client/server offset the rubberband can never
+     * heal, and - when applied independently on both sides - makes them fight (the server hitbox lags
+     * behind in a wall while the client drives on). Routing the correction here fixes that: on the
+     * server it is folded into {@code serverDeltaM}/{@code serverDeltaR} and broadcast; on the client it
+     * is folded into {@code clientDeltaM}/{@code clientDeltaR}. Identical corrections then cancel in the
+     * delta comparison (no rubberband jerk) and only genuine divergence is smoothed - so vehicles feel
+     * solid against walls with no snap-back and stay in sync.
+     *
+     * @param positionShift push to apply this tick, or {@code null}/zero for none
+     * @param yawDegrees     yaw rotation (degrees) to apply this tick, or 0 for none
+     */
+    public void applyExternalCollisionCorrection(Point3D positionShift, double yawDegrees) {
+        boolean hasPos = positionShift != null && !positionShift.isZero();
+        if (!hasPos && yawDegrees == 0) {
+            return;
+        }
+        if (hasPos) {
+            position.add(positionShift);
+        }
+        if (yawDegrees != 0) {
+            orientation.rotateY(yawDegrees).convertToAngles();
+        }
+        if (world.isClient()) {
+            // Local prediction: record the shift so the rubberband reconciles to it instead of undoing it.
+            if (hasPos) {
+                clientDeltaM.add(positionShift);
+            }
+            if (yawDegrees != 0) {
+                clientDeltaR.y += yawDegrees;
+            }
+        } else {
+            // Server authority: fold into the broadcast deltas and push to every tracking client.
+            if (hasPos) {
+                serverDeltaM.add(positionShift);
+            }
+            if (yawDegrees != 0) {
+                serverDeltaR.y += yawDegrees;
+            }
+            InterfaceManager.packetInterface.sendToAllClients(new PacketVehicleServerMovement(
+                    (EntityVehicleF_Physics) this, hasPos ? positionShift : new Point3D(),
+                    new Point3D(0, yawDegrees, 0), 0));
+        }
+    }
 }

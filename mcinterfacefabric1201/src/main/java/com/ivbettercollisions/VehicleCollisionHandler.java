@@ -46,6 +46,8 @@ public final class VehicleCollisionHandler {
     static final class State {
         final Map<UUID, Point3D> knockback = new HashMap<>();
         final Map<UUID, Double> spin = new HashMap<>();
+        /** Ticks remaining before a vehicle may receive another wall bounce/yaw (slide is never gated). */
+        final Map<UUID, Integer> wallImpactCooldown = new HashMap<>();
     }
 
     private static final State SERVER_STATE = new State();
@@ -79,6 +81,10 @@ public final class VehicleCollisionHandler {
         // Position shifts applied this tick, per vehicle.  Boxes only rebuild next tick, so the wall
         // pass offsets its block queries by these.
         Map<UUID, Point3D> appliedShift = new HashMap<>();
+
+        // 0) Age the wall-impact cooldowns.
+        state.wallImpactCooldown.values().removeIf(ticks -> ticks <= 1);
+        state.wallImpactCooldown.replaceAll((uuid, ticks) -> ticks - 1);
 
         // 1) Apply and decay knockback / spin carried over from previous ticks' impacts.
         applyPendingMomentum(state, vehicles, appliedShift);
@@ -154,6 +160,17 @@ public final class VehicleCollisionHandler {
         double length = knock.length();
         if (length > MAX_KNOCKBACK) {
             knock.scale(MAX_KNOCKBACK / length);
+        }
+    }
+
+    /** True when this vehicle may take another wall bounce/yaw (the cooldown never gates slide or push-out). */
+    static boolean canTakeWallImpact(State state, UUID uuid) {
+        return !state.wallImpactCooldown.containsKey(uuid);
+    }
+
+    static void startWallImpactCooldown(State state, UUID uuid) {
+        if (CollisionConfig.wallImpactCooldownTicks > 0) {
+            state.wallImpactCooldown.put(uuid, CollisionConfig.wallImpactCooldownTicks);
         }
     }
 

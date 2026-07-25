@@ -10,6 +10,7 @@ import com.ivbettercollisions.CollisionMath;
 import com.ivbettercollisions.ContactManifold;
 import com.ivbettercollisions.VehicleCollisionHandler;
 import com.ivbettercollisions.VehicleCollisionPass;
+import com.ivbettercollisions.WallPushResolver;
 
 import mcinterfacefabric1201.BuilderEntityExisting;
 import mcinterfacefabric1201.BuilderItem;
@@ -516,6 +517,192 @@ public class IVGameTests implements FabricGameTest {
             }
             helper.succeed();
         });
+    }
+
+    /**
+     * Regression for the narrow-passage phantom collision: a vehicle driving down a corridor WIDER than
+     * itself must not be touched at all.  The predecessor inflated each hitbox by a fixed margin and
+     * reused that inflated overlap as the push depth, so both walls "collided" at once, the larger push
+     * won outright, and the multi-pass loop became a period-2 cycle that flung the vehicle wall to wall
+     * (traced at +-0.78 blocks, 20x a second).  Simulated here directly on the true-box geometry.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void wallCorridorStability(GameTestHelper helper) {
+        //Corridor free span x in [1,4]; vehicle half-width 1.25 (2.5 wide) => 0.25 clearance per side.
+        double wallWestMax = 1.0, wallEastMin = 4.0, halfWidth = 1.25;
+        double centre = 2.5;
+        for (int tick = 0; tick < 20; tick++) {
+            WallPushResolver resolver = new WallPushResolver();
+            double westOverlap = CollisionMath.overlap(centre - halfWidth, centre + halfWidth, -1, wallWestMax);
+            if (westOverlap > 0) {
+                resolver.addPushX(westOverlap);
+            }
+            double eastOverlap = CollisionMath.overlap(centre - halfWidth, centre + halfWidth, wallEastMin, 6);
+            if (eastOverlap > 0) {
+                resolver.addPushX(-eastOverlap);
+            }
+            centre += resolver.netX();
+        }
+        if (Math.abs(centre - 2.5) > 1.0e-9) {
+            helper.fail("Vehicle in an over-wide corridor was moved to " + centre + " (expected to stay at 2.5)");
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * A gap genuinely narrower than the vehicle must settle it centred rather than launching it: each
+     * pass halves the remaining asymmetry instead of satisfying one wall at the other's expense.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void wallWedgedNoTeleport(GameTestHelper helper) {
+        double wallWestMax = 1.0, wallEastMin = 3.0, halfWidth = 1.25;   //2.0 gap, 2.5 wide vehicle
+        double centre = 1.9;   //off-centre start
+        double maxStep = 0;
+        for (int tick = 0; tick < 20; tick++) {
+            WallPushResolver resolver = new WallPushResolver();
+            double westOverlap = CollisionMath.overlap(centre - halfWidth, centre + halfWidth, -1, wallWestMax);
+            if (westOverlap > 0) {
+                resolver.addPushX(westOverlap);
+            }
+            double eastOverlap = CollisionMath.overlap(centre - halfWidth, centre + halfWidth, wallEastMin, 6);
+            if (eastOverlap > 0) {
+                resolver.addPushX(-eastOverlap);
+            }
+            if (!resolver.isWedgedX()) {
+                helper.fail("Vehicle in an undersized gap should report wedged");
+                return;
+            }
+            double step = resolver.netX();
+            maxStep = Math.max(maxStep, Math.abs(step));
+            centre += step;
+        }
+        if (maxStep > 0.3) {
+            helper.fail("Wedged vehicle was teleported by " + maxStep + " blocks in one pass");
+            return;
+        }
+        if (Math.abs(centre - 2.0) > 1.0e-6) {
+            helper.fail("Wedged vehicle settled at " + centre + ", expected centred at 2.0");
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Push resolution must not depend on the order contacts arrive in.  MTS builds
+     * allBlockCollisionBoxes by iterating a HashSet, so box order genuinely differs between the client
+     * and server JVMs; an order-sensitive tie-break would resolve the same tick one way on the server and
+     * the other on the client, producing rubber-band on top of the jolt.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void wallPushOrderIndependent(GameTestHelper helper) {
+        double[] pushes = {0.4, -0.25, 0.1, -0.4, 0.35};
+        WallPushResolver forward = new WallPushResolver();
+        for (double push : pushes) {
+            forward.addPushX(push);
+            forward.addPushZ(push * 0.5);
+        }
+        WallPushResolver backward = new WallPushResolver();
+        for (int i = pushes.length - 1; i >= 0; i--) {
+            backward.addPushX(pushes[i]);
+            backward.addPushZ(pushes[i] * 0.5);
+        }
+        if (Math.abs(forward.netX() - backward.netX()) > 1.0e-12 || Math.abs(forward.netZ() - backward.netZ()) > 1.0e-12) {
+            helper.fail("Push resolution is order-dependent: " + forward.netX() + " vs " + backward.netX());
+            return;
+        }
+        //A single-sided set must still escape fully (no halving when not wedged).
+        WallPushResolver oneSided = new WallPushResolver();
+        oneSided.addPushX(0.2);
+        oneSided.addPushX(0.5);
+        if (oneSided.isWedgedX() || Math.abs(oneSided.netX() - 0.5) > 1.0e-12) {
+            helper.fail("Single-sided push should be the deepest demand, got " + oneSided.netX());
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * The block a vehicle is driving OVER must never produce a horizontal shove.  Its vertical overlap is
+     * the sink depth (tiny) while the horizontal overlaps are the full block footprint, so resolving it
+     * on a horizontal axis would fling the vehicle a whole block sideways - the "collides with nothing on
+     * flat ground" report.  Reachable in practice because a wheel jammed against a kerb is excluded from
+     * MTS's climb correction yet still added to the collision box list.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void wallFloorContactFiltered(GameTestHelper helper) {
+        //Box sunk 0.001 into the floor block directly beneath it.
+        if (!CollisionMath.isVerticalContact(1.0, 0.001, 1.0)) {
+            helper.fail("Floor contact under the vehicle was not classified as vertical");
+            return;
+        }
+        //A genuine side wall: deep vertical overlap, shallow horizontal penetration.
+        if (CollisionMath.isVerticalContact(0.05, 1.0, 1.0)) {
+            helper.fail("Side wall contact was misclassified as vertical and would be ignored");
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * The impact probe must reach only along the direction of travel: a wall running parallel to the
+     * vehicle's path (a corridor side) can then never enter it, which is what makes the phantom
+     * structurally impossible rather than merely tuned away.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void wallSweptProbeIsDirectional(GameTestHelper helper) {
+        double speedFactor = 0.35;
+        //Driving north (-Z) at 1.0 m/tick: Z expands, X does not.
+        double expZ = CollisionMath.sweptExpansion(-1.0, speedFactor, 0.75);
+        double expX = CollisionMath.sweptExpansion(0.0, speedFactor, 0.75);
+        if (expZ >= 0 || Math.abs(expZ + 0.35) > 1.0e-9) {
+            helper.fail("Travel-axis expansion wrong: " + expZ);
+            return;
+        }
+        if (expX != 0) {
+            helper.fail("Cross-axis expansion must be zero, got " + expX);
+            return;
+        }
+        //Box x in [-1,1]; a corridor wall at x in [1.2, 2.2] is 0.2 clear and must NOT be probed...
+        double sweptMinX = -1 + Math.min(expX, 0), sweptMaxX = 1 + Math.max(expX, 0);
+        if (CollisionMath.overlap(sweptMinX, sweptMaxX, 1.2, 2.2) > 0) {
+            helper.fail("Parallel corridor wall entered the swept probe");
+            return;
+        }
+        //...while a wall ahead at z in [-1.3,-0.3], 0.3 clear of a box z in [-1,1] shifted by travel, IS.
+        double sweptMinZ = -1 + Math.min(expZ, 0), sweptMaxZ = 1 + Math.max(expZ, 0);
+        if (CollisionMath.overlap(sweptMinZ, sweptMaxZ, -1.3, -1.05) <= 0) {
+            helper.fail("Wall ahead was not reached by the swept probe");
+            return;
+        }
+        //Probe distance is capped.
+        if (CollisionMath.sweptExpansion(100, speedFactor, 0.75) != 0.75) {
+            helper.fail("Probe distance cap not honored");
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Kerbs, doorsteps and slabs are driven over by MTS's climb system, so they must not trigger a bounce
+     * or a yaw kick on the way; anything taller than the climb height still counts as a wall.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void wallCurbSkipsImpact(GameTestHelper helper) {
+        double boxBottom = 64.0;
+        if (!CollisionMath.isClimbable(64.5, boxBottom, 1.0)) {
+            helper.fail("Half-slab kerb should be climbable");
+            return;
+        }
+        if (!CollisionMath.isClimbable(65.0, boxBottom, 1.0)) {
+            helper.fail("Full block at exactly the climb height should be climbable");
+            return;
+        }
+        if (CollisionMath.isClimbable(66.0, boxBottom, 1.0)) {
+            helper.fail("A two-block wall must not be treated as a kerb");
+            return;
+        }
+        helper.succeed();
     }
 
     // ---- shared helpers for the vehicle-placement tests -------------------------------------------

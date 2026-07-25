@@ -30,6 +30,39 @@ public final class CollisionMath {
     }
 
     /**
+     * True when a box/block overlap is a vertical (resting, stacking, kerb-top) contact rather than a
+     * side contact.  A block directly beneath a vehicle overlaps by the full block footprint horizontally
+     * but only by the sink depth vertically, so resolving it on a horizontal axis would fling the vehicle
+     * sideways by up to a full block; such contacts belong to MTS's ground-device system, not to us.
+     */
+    public static boolean isVerticalContact(double overlapX, double overlapY, double overlapZ) {
+        return overlapY <= Math.min(overlapX, overlapZ);
+    }
+
+    /**
+     * True when a contacted block is low enough for the vehicle to drive over it (kerb, doorstep, slab)
+     * rather than a wall to bounce off.  Mirrors the wall-versus-kerb discrimination Automobility does
+     * with a dual-height probe, but needs no second world query: the block's top face is already known.
+     *
+     * @param blockTop   world Y of the contacted block's top face
+     * @param boxBottom  world Y of the vehicle box's bottom face
+     * @param curbHeight climb height (blocks) below which contacts are treated as driveable
+     */
+    public static boolean isClimbable(double blockTop, double boxBottom, double curbHeight) {
+        return blockTop - boxBottom <= curbHeight;
+    }
+
+    /**
+     * Signed expansion of one axis for the swept impact probe: how far the box travels along that axis
+     * this tick, clamped to {@code maxProbe}.  Positive expands the max face, negative the min face -
+     * the box is only ever grown along the direction of travel, never sideways or backwards, which is
+     * what makes a corridor's side walls structurally unable to produce a phantom contact.
+     */
+    public static double sweptExpansion(double motionComponent, double speedFactor, double maxProbe) {
+        return clamp(motionComponent * speedFactor, -maxProbe, maxProbe);
+    }
+
+    /**
      * Impulse magnitude for a 1-D collision along the contact normal.
      *
      * @param closingSpeed relative normal velocity (B.motion - A.motion) dot n; negative when closing

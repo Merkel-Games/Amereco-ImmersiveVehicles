@@ -21,20 +21,24 @@ import com.google.gson.GsonBuilder;
  */
 public final class CollisionConfig {
     /** Current schema version written to new/migrated files. */
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
 
     /** Master switch for the whole collision system. */
     public static boolean enabled = true;
 
     // ---- wall pass (v1 core) ----------------------------------------------------------------------
     /** Extra push-out distance applied beyond exact contact when ejecting a vehicle from a block (blocks). */
-    public static double epsilon = 0.1;
-    /** Maximum penetration depth that will be corrected (blocks).  Deeper embeds are left alone. */
+    public static double epsilon = 0.001;
+    /** Maximum total correction applied to one axis in a tick (blocks).  Deeper embeds are left alone. */
     public static double maxCorrection = 2.0;
     /** Number of wall-correction passes per tick (handles corners / stacked blocks). */
     public static int maxPasses = 5;
-    /** Base extra margin added around each BLOCK hitbox on the horizontal axes (blocks). */
-    public static double wallBoxMargin = 0.54;
+    /**
+     * Extra margin around each BLOCK hitbox when querying for candidate blocks (blocks).  Detection only -
+     * the push-out depth is always measured against the TRUE box.  0 is correct; a small value only widens
+     * the candidate query.
+     */
+    public static double wallBoxMargin = 0.0;
     /** Minimum vehicle age (ticks) before corrections apply - avoids fighting the MTS spawn/placement system. */
     public static int minTickAge = 40;
 
@@ -50,11 +54,19 @@ public final class CollisionConfig {
     /** Cap (degrees) on the yaw fed into the spin state from a single wall impact. */
     public static double wallYawMaxPerImpact = 25.0;
     /** Approach speed (blocks/tick) below which a wall contact is "rest": pure slide, no bounce or yaw. */
-    public static double wallMinImpactSpeed = 0.02;
-    /** Extra detection margin per block of per-tick displacement (catches high-speed clipping). */
-    public static double wallMarginSpeedScale = 0.5;
-    /** Cap (blocks) on the speed-adaptive part of the wall margin. */
-    public static double wallMarginSpeedMax = 1.0;
+    public static double wallMinImpactSpeed = 0.05;
+    /** Legacy speed-adaptive detection margin.  Superseded by the swept impact probe; 0 disables. */
+    public static double wallMarginSpeedScale = 0.0;
+    /** Cap (blocks) on the legacy speed-adaptive wall margin. */
+    public static double wallMarginSpeedMax = 0.0;
+    /** Cap (blocks) on how far ahead the swept impact probe reaches along the direction of travel. */
+    public static double wallProbeMaxDistance = 0.75;
+    /** Contacts whose block top is within this height of the box bottom are driveable kerbs, not walls. */
+    public static double wallCurbHeight = 1.0;
+    /** Ticks after a wall impact during which no new bounce/yaw is applied (slide and push-out continue). */
+    public static int wallImpactCooldownTicks = 6;
+    /** Net corrections smaller than this (blocks) are treated as settled and skipped. */
+    public static double wallWedgeThreshold = 0.01;
 
     // ---- vehicle-to-vehicle -----------------------------------------------------------------------
     /** Enable vehicle-to-vehicle collision. */
@@ -113,10 +125,10 @@ public final class CollisionConfig {
         int configVersion = 0;
         boolean enabled = true;
 
-        double epsilon = 0.1;
+        double epsilon = 0.001;
         double maxCorrection = 2.0;
         int maxPasses = 5;
-        double wallBoxMargin = 0.54;
+        double wallBoxMargin = 0.0;
         int minTickAge = 40;
 
         double wallRestitution = 0.2;
@@ -124,9 +136,13 @@ public final class CollisionConfig {
         boolean wallFrictionUseSlipperiness = true;
         double wallYawFactor = 1.0;
         double wallYawMaxPerImpact = 25.0;
-        double wallMinImpactSpeed = 0.02;
-        double wallMarginSpeedScale = 0.5;
-        double wallMarginSpeedMax = 1.0;
+        double wallMinImpactSpeed = 0.05;
+        double wallMarginSpeedScale = 0.0;
+        double wallMarginSpeedMax = 0.0;
+        double wallProbeMaxDistance = 0.75;
+        double wallCurbHeight = 1.0;
+        int wallImpactCooldownTicks = 6;
+        double wallWedgeThreshold = 0.01;
 
         boolean v2vEnabled = true;
         String v2vMode = "box";
@@ -165,8 +181,26 @@ public final class CollisionConfig {
                     }
                 }
                 if (data.configVersion < CURRENT_VERSION) {
-                    // v1 keys survive with their old values; new keys are at defaults.  Persist the
-                    // merged result so the file on disk gains the full v2 schema.
+                    // Tuned keys survive with their old values; new keys are at defaults.  The one
+                    // exception is the v1/v2 detection-margin family: those values are now actively
+                    // harmful (the margin used to double as the push-out depth, which gave every block
+                    // an invisible ~0.5-block force field and made vehicles ricochet between the walls
+                    // of a narrow passage), so they are force-reset rather than preserved.
+                    if (data.configVersion < 3) {
+                        Data fresh = new Data();
+                        String reset = String.format("wallBoxMargin %s->%s, wallMarginSpeedScale %s->%s, wallMarginSpeedMax %s->%s, epsilon %s->%s, wallMinImpactSpeed %s->%s",
+                                data.wallBoxMargin, fresh.wallBoxMargin,
+                                data.wallMarginSpeedScale, fresh.wallMarginSpeedScale,
+                                data.wallMarginSpeedMax, fresh.wallMarginSpeedMax,
+                                data.epsilon, fresh.epsilon,
+                                data.wallMinImpactSpeed, fresh.wallMinImpactSpeed);
+                        data.wallBoxMargin = fresh.wallBoxMargin;
+                        data.wallMarginSpeedScale = fresh.wallMarginSpeedScale;
+                        data.wallMarginSpeedMax = fresh.wallMarginSpeedMax;
+                        data.epsilon = fresh.epsilon;
+                        data.wallMinImpactSpeed = fresh.wallMinImpactSpeed;
+                        IVBetterCollisions.LOGGER.info("[IVBC] Reset superseded detection-margin options: {}", reset);
+                    }
                     data.configVersion = CURRENT_VERSION;
                     try (Writer writer = Files.newBufferedWriter(file)) {
                         GSON.toJson(data, writer);
@@ -201,6 +235,10 @@ public final class CollisionConfig {
         wallMinImpactSpeed = Math.max(0, data.wallMinImpactSpeed);
         wallMarginSpeedScale = Math.max(0, data.wallMarginSpeedScale);
         wallMarginSpeedMax = Math.max(0, data.wallMarginSpeedMax);
+        wallProbeMaxDistance = Math.max(0, data.wallProbeMaxDistance);
+        wallCurbHeight = Math.max(0, data.wallCurbHeight);
+        wallImpactCooldownTicks = Math.max(0, data.wallImpactCooldownTicks);
+        wallWedgeThreshold = Math.max(0, data.wallWedgeThreshold);
 
         v2vEnabled = data.v2vEnabled;
         v2vMode = "sphere".equalsIgnoreCase(data.v2vMode) ? "sphere" : "box";

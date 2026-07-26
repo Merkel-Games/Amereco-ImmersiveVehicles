@@ -44,11 +44,11 @@ final class WallCollisionPass {
      * applied to this vehicle earlier this tick (v2v separation, knockback) - the vehicle's boxes only
      * rebuild next tick, so block queries are offset by it; the pass adds its own correction to it.
      */
-    static void correct(Level level, EntityVehicleF_Physics vehicle, VehicleCollisionHandler.State state, Point3D priorShift) {
+    static void correct(Level level, EntityVehicleF_Physics vehicle, VehicleCollisionHandler.State state, List<BoundingBox> bodyBoxes, Point3D priorShift) {
         if (ConfigSystem.settings.general.noclipVehicles.value) {
             return;
         }
-        if (!VehicleCollisionHandler.isCollidable(vehicle) || vehicle.allBlockCollisionBoxes.isEmpty()) {
+        if (!VehicleCollisionHandler.isCollidable(vehicle) || bodyBoxes == null || bodyBoxes.isEmpty()) {
             return;
         }
         // The swept probe reaches along this tick's travel.  prevMotion, not motion: by now core has
@@ -76,14 +76,7 @@ final class WallCollisionPass {
             resolver.reset();
             boolean firstPass = pass == 0;
 
-            for (BoundingBox box : vehicle.allBlockCollisionBoxes) {
-                if (box.definition == null) {
-                    // Ground-device boxes: their globalCenter carries an extra tick of motion look-ahead
-                    // (VehicleGroundDeviceBox applies vehicle.motion * speedFactor) and they can appear in
-                    // this list twice, so their position is not a sound basis for a positional correction.
-                    // Wheel-versus-ground is the ground-device system's job anyway.
-                    continue;
-                }
+            for (BoundingBox box : bodyBoxes) {
                 // Query at the box's current centre plus whatever has been applied this tick (the
                 // vehicle's boxes are only rebuilt next tick, so we offset the query rather than mutate them).
                 double cx = box.globalCenter.x + priorShift.x + totalX;

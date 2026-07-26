@@ -1,11 +1,13 @@
 package com.ivbettercollisions;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import minecrafttransportsimulator.baseclasses.BoundingBox;
 import minecrafttransportsimulator.baseclasses.Point3D;
 import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import net.minecraft.world.level.Level;
@@ -81,6 +83,11 @@ public final class VehicleCollisionHandler {
         // Position shifts applied this tick, per vehicle.  Boxes only rebuild next tick, so the wall
         // pass offsets its block queries by these.
         Map<UUID, Point3D> appliedShift = new HashMap<>();
+        // Bodywork boxes, selected by colour once per tick and shared by both passes.
+        Map<UUID, List<BoundingBox>> boxes = new HashMap<>();
+        for (EntityVehicleF_Physics vehicle : vehicles) {
+            boxes.put(vehicle.uniqueUUID, selectBoxes(vehicle));
+        }
 
         // 0) Age the wall-impact cooldowns.
         state.wallImpactCooldown.values().removeIf(ticks -> ticks <= 1);
@@ -91,7 +98,7 @@ public final class VehicleCollisionHandler {
 
         // 2) Resolve vehicle-to-vehicle contacts.
         if (CollisionConfig.v2vEnabled && vehicles.size() > 1) {
-            VehicleCollisionPass.resolve(state, vehicles, appliedShift);
+            VehicleCollisionPass.resolve(state, vehicles, boxes, appliedShift);
         }
 
         // 3) Push each vehicle out of any solid blocks it is clipping into (horizontal only).  Last, so
@@ -99,7 +106,7 @@ public final class VehicleCollisionHandler {
         Point3D zeroShift = new Point3D();
         for (EntityVehicleF_Physics vehicle : vehicles) {
             Point3D shift = appliedShift.get(vehicle.uniqueUUID);
-            WallCollisionPass.correct(level, vehicle, state, shift != null ? shift : zeroShift);
+            WallCollisionPass.correct(level, vehicle, state, boxes.get(vehicle.uniqueUUID), shift != null ? shift : zeroShift);
         }
     }
 
@@ -194,6 +201,28 @@ public final class VehicleCollisionHandler {
      */
     static boolean isCollidable(EntityVehicleF_Physics vehicle) {
         return vehicle.ticksExisted >= CollisionConfig.minTickAge && vehicle.groundDeviceCollective.isReady();
+    }
+
+    /**
+     * The hitboxes this addon treats as bodywork, chosen by the colours configured in
+     * {@link CollisionConfig#collisionBoxColors}.
+     * <p>
+     * Deliberately reads {@code allCollisionBoxes} rather than MTS's own {@code allBlockCollisionBoxes}:
+     * the latter is filtered to {@code CollisionType.BLOCK}, and packs are inconsistent about tagging a
+     * car's hull with it - on the Official Content Pack most cars only carry BLOCK on part of the body,
+     * so following that filter made them collide driving backwards and phase through walls driving
+     * forwards.  Reading the full set and selecting by colour also structurally excludes the generated
+     * ground-device boxes, which MTS appends straight to {@code allBlockCollisionBoxes} after rebuilding
+     * it and which carry an extra tick of motion look-ahead in their centres.
+     */
+    static List<BoundingBox> selectBoxes(EntityVehicleF_Physics vehicle) {
+        List<BoundingBox> selected = new ArrayList<>();
+        for (BoundingBox box : vehicle.allCollisionBoxes) {
+            if (CollisionConfig.collisionBoxColors.contains(BoxCategory.of(box))) {
+                selected.add(box);
+            }
+        }
+        return selected;
     }
 
     static boolean shareTowChain(EntityVehicleF_Physics a, EntityVehicleF_Physics b) {

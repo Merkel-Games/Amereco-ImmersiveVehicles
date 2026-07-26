@@ -4,6 +4,10 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Set;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -21,10 +25,19 @@ import com.google.gson.GsonBuilder;
  */
 public final class CollisionConfig {
     /** Current schema version written to new/migrated files. */
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 4;
 
     /** Master switch for the whole collision system. */
     public static boolean enabled = true;
+
+    /**
+     * Which hitboxes count as vehicle bodywork, named by the colour MTS draws them in under F3+B.
+     * Defaults to RED (boxes MTS itself collides with) plus BLACK (ordinary bodywork tagged with some
+     * other collision type) - many packs tag only part of a car's hull as BLOCK, which would otherwise
+     * leave the rest of the body passing through walls.  GREEN (interactive), ORANGE (bullet-only) and
+     * YELLOW (part slots / generated ground-device boxes) are excluded.
+     */
+    public static Set<BoxCategory> collisionBoxColors = EnumSet.of(BoxCategory.RED, BoxCategory.BLACK);
 
     // ---- wall pass (v1 core) ----------------------------------------------------------------------
     /** Extra push-out distance applied beyond exact contact when ejecting a vehicle from a block (blocks). */
@@ -124,6 +137,7 @@ public final class CollisionConfig {
         // detectably old - otherwise migration never triggers.  Set explicitly before every write.
         int configVersion = 0;
         boolean enabled = true;
+        List<String> collisionBoxColors = new ArrayList<>(List.of("RED", "BLACK"));
 
         double epsilon = 0.001;
         double maxCorrection = 2.0;
@@ -165,9 +179,35 @@ public final class CollisionConfig {
     }
 
     /**
+     * Turns the configured colour names into categories, ignoring unknown entries so a typo degrades to
+     * "that colour is off" rather than breaking collisions entirely.  An empty or absent list falls back
+     * to the defaults, since a vehicle with no boxes at all would silently have no collisions.
+     */
+    private static Set<BoxCategory> parseColors(List<String> names) {
+        Set<BoxCategory> parsed = EnumSet.noneOf(BoxCategory.class);
+        if (names != null) {
+            for (String name : names) {
+                if (name == null) {
+                    continue;
+                }
+                try {
+                    parsed.add(BoxCategory.valueOf(name.trim().toUpperCase()));
+                } catch (IllegalArgumentException e) {
+                    IVBetterCollisions.LOGGER.warn("[IVBC] Unknown collision box colour '{}' ignored; valid: RED, BLACK, GREEN, ORANGE, YELLOW", name);
+                }
+            }
+        }
+        if (parsed.isEmpty()) {
+            IVBetterCollisions.LOGGER.warn("[IVBC] No valid collisionBoxColors configured, falling back to RED + BLACK");
+            return EnumSet.of(BoxCategory.RED, BoxCategory.BLACK);
+        }
+        return parsed;
+    }
+
+    /**
      * Loads the config from {@code <configDir>/ivbettercollisions.json}, creating it with defaults if it
-     * does not exist and rewriting it in the v2 schema if it is an older version.  Never throws - on any
-     * error it logs and keeps the built-in defaults so a bad config can never stop the mod loading.
+     * does not exist and rewriting it in the current schema if it is an older version.  Never throws - on
+     * any error it logs and keeps the built-in defaults so a bad config can never stop the mod loading.
      */
     public static void load(Path configDir) {
         Data data = new Data();
@@ -220,6 +260,7 @@ public final class CollisionConfig {
         }
 
         enabled = data.enabled;
+        collisionBoxColors = parseColors(data.collisionBoxColors);
 
         epsilon = data.epsilon;
         maxCorrection = data.maxCorrection;

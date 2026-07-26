@@ -33,17 +33,17 @@ public final class VehicleCollisionPass {
     private VehicleCollisionPass() {
     }
 
-    static void resolve(VehicleCollisionHandler.State state, List<EntityVehicleF_Physics> vehicles, Map<UUID, Point3D> appliedShift) {
+    static void resolve(VehicleCollisionHandler.State state, List<EntityVehicleF_Physics> vehicles, Map<UUID, List<BoundingBox>> boxes, Map<UUID, Point3D> appliedShift) {
         if ("sphere".equals(CollisionConfig.v2vMode)) {
             resolveSphere(state, vehicles);
         } else {
-            resolveBox(state, vehicles, appliedShift);
+            resolveBox(state, vehicles, boxes, appliedShift);
         }
     }
 
     // ---- box mode (v2) ----------------------------------------------------------------------------
 
-    private static void resolveBox(VehicleCollisionHandler.State state, List<EntityVehicleF_Physics> vehicles, Map<UUID, Point3D> appliedShift) {
+    private static void resolveBox(VehicleCollisionHandler.State state, List<EntityVehicleF_Physics> vehicles, Map<UUID, List<BoundingBox>> boxes, Map<UUID, Point3D> appliedShift) {
         double broad = CollisionConfig.v2vBroadPhaseRadius;
         Map<UUID, double[]> unionCache = new HashMap<>();
         ContactManifold manifold = new ContactManifold();
@@ -52,19 +52,21 @@ public final class VehicleCollisionPass {
 
         for (int a = 0; a < count; a++) {
             EntityVehicleF_Physics va = vehicles.get(a);
-            if (!VehicleCollisionHandler.isCollidable(va) || va.allBlockCollisionBoxes.isEmpty()) {
+            List<BoundingBox> boxesA = boxes.get(va.uniqueUUID);
+            if (!VehicleCollisionHandler.isCollidable(va) || boxesA == null || boxesA.isEmpty()) {
                 continue;
             }
             for (int b = a + 1; b < count; b++) {
                 EntityVehicleF_Physics vb = vehicles.get(b);
-                if (!VehicleCollisionHandler.isCollidable(vb) || vb.allBlockCollisionBoxes.isEmpty()) {
+                List<BoundingBox> boxesB = boxes.get(vb.uniqueUUID);
+                if (!VehicleCollisionHandler.isCollidable(vb) || boxesB == null || boxesB.isEmpty()) {
                     continue;
                 }
                 if (va.position.distanceTo(vb.position) > broad) {
                     continue;
                 }
-                double[] unionA = unionBox(unionCache, va);
-                double[] unionB = unionBox(unionCache, vb);
+                double[] unionA = unionBox(unionCache, va, boxesA);
+                double[] unionB = unionBox(unionCache, vb, boxesB);
                 if (CollisionMath.overlap(unionA[0], unionA[3], unionB[0], unionB[3]) <= 0
                         || CollisionMath.overlap(unionA[1], unionA[4], unionB[1], unionB[4]) <= 0
                         || CollisionMath.overlap(unionA[2], unionA[5], unionB[2], unionB[5]) <= 0) {
@@ -78,7 +80,7 @@ public final class VehicleCollisionPass {
                 }
 
                 manifold.reset();
-                collectContacts(va.allBlockCollisionBoxes, vb.allBlockCollisionBoxes, manifold);
+                collectContacts(boxesA, boxesB, manifold);
                 if (manifold.isEmpty()) {
                     continue;
                 }
@@ -187,12 +189,12 @@ public final class VehicleCollisionPass {
         }
     }
 
-    private static double[] unionBox(Map<UUID, double[]> cache, EntityVehicleF_Physics vehicle) {
+    private static double[] unionBox(Map<UUID, double[]> cache, EntityVehicleF_Physics vehicle, List<BoundingBox> bodyBoxes) {
         return cache.computeIfAbsent(vehicle.uniqueUUID, k -> {
             double margin = CollisionConfig.v2vBroadPhaseMargin;
             double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
             double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
-            for (BoundingBox box : vehicle.allBlockCollisionBoxes) {
+            for (BoundingBox box : bodyBoxes) {
                 minX = Math.min(minX, box.globalCenter.x - box.widthRadius);
                 minY = Math.min(minY, box.globalCenter.y - box.heightRadius);
                 minZ = Math.min(minZ, box.globalCenter.z - box.depthRadius);

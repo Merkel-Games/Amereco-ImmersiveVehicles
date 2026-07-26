@@ -2,10 +2,13 @@ package ivtestbed;
 
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.ivbettercollisions.BoxCategory;
+import com.ivbettercollisions.CollisionConfig;
 import com.ivbettercollisions.CollisionMath;
 import com.ivbettercollisions.ContactManifold;
 import com.ivbettercollisions.VehicleCollisionHandler;
@@ -21,6 +24,10 @@ import minecrafttransportsimulator.entities.instances.EntityVehicleF_Physics;
 import minecrafttransportsimulator.items.components.AItemBase;
 import minecrafttransportsimulator.items.components.AItemPack;
 import minecrafttransportsimulator.items.instances.ItemVehicle;
+import minecrafttransportsimulator.jsondefs.JSONAction;
+import minecrafttransportsimulator.jsondefs.JSONCollisionBox;
+import minecrafttransportsimulator.jsondefs.JSONCollisionGroup;
+import minecrafttransportsimulator.jsondefs.JSONCollisionGroup.CollisionType;
 import minecrafttransportsimulator.jsondefs.JSONPart;
 import minecrafttransportsimulator.packloading.PackParser;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
@@ -703,6 +710,122 @@ public class IVGameTests implements FabricGameTest {
             return;
         }
         helper.succeed();
+    }
+
+    /**
+     * The addon picks its bodywork hitboxes by the colour MTS draws them in, so the classifier must match
+     * {@code BoundingBox.renderWireframe}'s check order exactly - otherwise a colour named in the config
+     * would not mean the boxes the player sees in that colour.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void boxCategoryMatchesRenderOrder(GameTestHelper helper) {
+        if (BoxCategory.of(box(null, CollisionType.BLOCK)) != BoxCategory.RED) {
+            helper.fail("BLOCK box should be RED");
+            return;
+        }
+        if (BoxCategory.of(box(null, CollisionType.BULLET)) != BoxCategory.ORANGE) {
+            helper.fail("BULLET box should be ORANGE");
+            return;
+        }
+        //Render checks BULLET before BLOCK, so a box tagged both draws orange - classify it the same way.
+        if (BoxCategory.of(box(null, CollisionType.BULLET, CollisionType.BLOCK)) != BoxCategory.ORANGE) {
+            helper.fail("BULLET+BLOCK box should be ORANGE, matching the render order");
+            return;
+        }
+        //Ordinary bodywork: tagged, but with neither BLOCK nor BULLET.
+        if (BoxCategory.of(box(null, CollisionType.ENTITY, CollisionType.ATTACK, CollisionType.CLICK)) != BoxCategory.BLACK) {
+            helper.fail("ENTITY/ATTACK/CLICK box should be BLACK");
+            return;
+        }
+        //An action wins over every collision type, including BLOCK.
+        if (BoxCategory.of(box(new JSONAction(), CollisionType.BLOCK)) != BoxCategory.GREEN) {
+            helper.fail("A box with an action should be GREEN even when tagged BLOCK");
+            return;
+        }
+        //No JSON definition at all.
+        BoundingBox generated = new BoundingBox(new Point3D(0, 64, 0), 1, 1, 1);
+        if (BoxCategory.of(generated) != BoxCategory.YELLOW) {
+            helper.fail("A box with no definition should be YELLOW");
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * The shipped default must select the bodywork colours (red plus black) and nothing else: green is
+     * interactive trim, orange is bullet-only, yellow is not real bodywork.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void boxCategoryDefaultSelection(GameTestHelper helper) {
+        Set<BoxCategory> selected = CollisionConfig.collisionBoxColors;
+        if (!selected.contains(BoxCategory.RED) || !selected.contains(BoxCategory.BLACK)) {
+            helper.fail("Default selection must include RED and BLACK, got " + selected);
+            return;
+        }
+        if (selected.contains(BoxCategory.GREEN) || selected.contains(BoxCategory.ORANGE) || selected.contains(BoxCategory.YELLOW)) {
+            helper.fail("Default selection must exclude GREEN/ORANGE/YELLOW, got " + selected);
+            return;
+        }
+        helper.succeed();
+    }
+
+    /**
+     * The point of the whole change, measured on a real vehicle: selecting by colour must yield strictly
+     * more bodywork than MTS's own BLOCK filter did.  Pack cars carry BLOCK on only a few permanent boxes
+     * (a Mustang has six - rear bumper and roof strips - because the rest of its BLOCK groups are
+     * wheel-stubs that vanish once wheels are fitted), which is why they used to collide in reverse and
+     * drive straight through walls going forwards.
+     */
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE, timeoutTicks = 400)
+    public void boxSelectionCoversMoreThanBlockOnly(GameTestHelper helper) {
+        ItemVehicle vehicleItem = firstVehicleItem(helper);
+        if (vehicleItem == null) {
+            return;
+        }
+        placeVehicle(helper, vehicleItem, new BlockPos(4, 1, 4));
+        helper.runAfterDelay(80, () -> {
+            EntityVehicleF_Physics vehicle = vehicleNear(helper, new BlockPos(4, 1, 4), 8);
+            if (vehicle == null) {
+                helper.fail("Vehicle did not spawn");
+                return;
+            }
+            int blockOnly = 0;
+            int selected = 0;
+            Map<BoxCategory, Integer> byCategory = new HashMap<>();
+            for (BoundingBox box : vehicle.allCollisionBoxes) {
+                BoxCategory category = BoxCategory.of(box);
+                byCategory.merge(category, 1, Integer::sum);
+                if (box.collisionTypes != null && box.collisionTypes.contains(CollisionType.BLOCK)) {
+                    ++blockOnly;
+                }
+                if (CollisionConfig.collisionBoxColors.contains(category)) {
+                    ++selected;
+                }
+            }
+            System.out.println("[IVTEST] " + vehicleItem.definition.systemName + " boxes by category: " + byCategory
+                    + " | BLOCK-only=" + blockOnly + " selected=" + selected);
+            if (selected == 0) {
+                helper.fail("Colour selection produced no bodywork boxes at all");
+                return;
+            }
+            if (selected < blockOnly) {
+                helper.fail("Colour selection (" + selected + ") lost boxes the BLOCK filter had (" + blockOnly + ")");
+                return;
+            }
+            helper.succeed();
+        });
+    }
+
+    /** Builds a JSON-backed box in one collision group, for classifier tests. */
+    private static BoundingBox box(JSONAction action, CollisionType... types) {
+        JSONCollisionBox definition = new JSONCollisionBox();
+        definition.pos = new Point3D();
+        definition.width = 1;
+        definition.height = 1;
+        definition.action = action;
+        JSONCollisionGroup group = new JSONCollisionGroup();
+        group.collisionTypes = new HashSet<>(List.of(types));
+        return new BoundingBox(definition, group);
     }
 
     // ---- shared helpers for the vehicle-placement tests -------------------------------------------
